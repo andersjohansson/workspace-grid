@@ -550,7 +550,7 @@ function _getWorkspaceDisplay() {
 /******************
  * Overrides the workspaces display in the overview
  ******************/
-const ThumbnailsBox = new Lang.Class({
+var ThumbnailsBox = new Lang.Class({
     Name: 'ThumbnailsBox',
     Extends: WorkspaceThumbnail.ThumbnailsBox,
 
@@ -567,24 +567,10 @@ const ThumbnailsBox = new Lang.Class({
         this.actor = new Shell.GenericContainer({ reactive: true,
                                                   style_class: 'workspace-thumbnails',
                                                   request_mode: Clutter.RequestMode.WIDTH_FOR_HEIGHT });
-        this.actor.connect('get-preferred-width', Lang.bind(this, this._getPreferredWidth));
-        this.actor.connect('get-preferred-height', Lang.bind(this, this._getPreferredHeight));
-        this.actor.connect('allocate', Lang.bind(this, this._allocate));
+        this.actor.connect('get-preferred-width', this._getPreferredWidth.bind(this));
+        this.actor.connect('get-preferred-height', this._getPreferredHeight.bind(this));
+        this.actor.connect('allocate', this._allocate.bind(this));
         this.actor._delegate = this;
-
-        // When we animate the scale, we don't animate the requested size of the thumbnails, rather
-        // we ask for our final size and then animate within that size. This slightly simplifies the
-        // interaction with the main workspace windows (instead of constantly reallocating them
-        // to a new size, they get a new size once, then use the standard window animation code
-        // allocate the windows to their new positions), however it causes problems for drawing
-        // the background and border wrapped around the thumbnail as we animate - we can't just pack
-        // the container into a box and set style properties on the box since that box would wrap
-        // around the final size not the animating size. So instead we fake the background with
-        // an actor underneath the content and adjust the allocation of our children to leave space
-        // for the border and padding of the background actor.
-//        this._background = new St.Bin({ style_class: 'workspace-thumbnails-background' });
-
-//        this.actor.add_actor(this._background);
 
         let indicator = new St.Bin({ style_class: 'workspace-thumbnail-indicator' });
 
@@ -596,7 +582,7 @@ const ThumbnailsBox = new Lang.Class({
 
         this._dropWorkspace = -1;
         this._dropPlaceholderPos = -1;
-        this._dropPlaceholder = new St.Bin({ style_class: 'workspace-thumbnail-drop-indicator' });
+        this._dropPlaceholder = new St.Bin({ style_class: 'placeholder' });
         this.actor.add_actor(this._dropPlaceholder);
         this._spliceIndex = -1;
 
@@ -613,32 +599,35 @@ const ThumbnailsBox = new Lang.Class({
 
         this._thumbnails = [];
 
-        this.actor.connect('button-press-event', function() { return true; });
-        this.actor.connect('button-release-event', Lang.bind(this, this._onButtonRelease));
+        this.actor.connect('button-press-event', () => Clutter.EVENT_STOP);
+        this.actor.connect('button-release-event', this._onButtonRelease.bind(this));
+        this.actor.connect('touch-event', this._onTouchEvent.bind(this));
 
         // @@ only change: store these IDs! (TODO: submit patch)
         this._signals = [];
         this._signals.push(Main.overview.connect('showing',
-                    Lang.bind(this, this._createThumbnails)));
+                    this._createThumbnails.bind(this)));
         this._signals.push(Main.overview.connect('hidden',
-                    Lang.bind(this, this._destroyThumbnails)));
+                    this._destroyThumbnails.bind(this)));
         this._signals.push(Main.overview.connect('item-drag-begin',
-                    Lang.bind(this, this._onDragBegin)));
+                    this._onDragBegin.bind(this)));
         this._signals.push(Main.overview.connect('item-drag-end',
-                    Lang.bind(this, this._onDragEnd)));
+                    this._onDragEnd.bind(this)));
         this._signals.push(Main.overview.connect('item-drag-cancelled',
-                    Lang.bind(this, this._onDragCancelled)));
+                    this._onDragCancelled.bind(this)));
         this._signals.push(Main.overview.connect('window-drag-begin',
-                    Lang.bind(this, this._onDragBegin)));
+                    this._onDragBegin.bind(this)));
         this._signals.push(Main.overview.connect('window-drag-end',
-                    Lang.bind(this, this._onDragEnd)));
+                    this._onDragEnd.bind(this)));
         this._signals.push(Main.overview.connect('window-drag-cancelled',
-                    Lang.bind(this, this._onDragCancelled)));
+                    this._onDragCancelled.bind(this)));
 
         this._settings = new Gio.Settings({ schema: OVERRIDE_SCHEMA });
         this._dynamicWorkspacesId = this._settings.connect(
                 'changed::dynamic-workspaces',
-                Lang.bind(this, this._updateSwitcherVisibility));
+                this._updateSwitcherVisibility.bind(this));
+
+        Main.layoutManager.connect('monitors-changed', this._rebuildThumbnails.bind(this));
 
         // @@ added
         this._indicatorX = 0; // to match indicatorY
@@ -720,6 +709,7 @@ const ThumbnailsBox = new Lang.Class({
     _activeWorkspaceChanged: function () {
         let thumbnail;
         let activeWorkspace = Utils.WS.getWS().get_active_workspace();
+        log("thumbs length = " + this._thumbnails.length);
         for (let i = 0; i < this._thumbnails.length; i++) {
             if (this._thumbnails[i].metaWorkspace === activeWorkspace) {
                 thumbnail = this._thumbnails[i];
@@ -746,7 +736,12 @@ const ThumbnailsBox = new Lang.Class({
         // the size request to our children because we know how big they are and know
         // that the actors aren't depending on the virtual functions being called.
 
-        this._ensurePorthole();
+        if (!this._ensurePorthole()) {
+            alloc.min_size = -1;
+            alloc.natural_size = -1;
+            return;
+        }
+
         let themeNode    = this.actor.get_theme_node();
 
         let spacing      = themeNode.get_length('spacing');
